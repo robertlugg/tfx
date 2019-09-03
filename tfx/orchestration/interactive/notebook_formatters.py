@@ -30,7 +30,7 @@ from tfx.components.base.base_component import BaseComponent
 from tfx.orchestration.interactive.execution_result import ExecutionResult
 from tfx.types.artifact import Artifact
 from tfx.types.channel import Channel
-from tfx.types.component_spec import _PropertyDictWrapper
+from tfx.types.component_spec import PropertyDictWrapper
 
 STATIC_HTML_CONTENTS = u"""<style>
 .tfx-object.expanded {
@@ -175,7 +175,7 @@ class NotebookFormatter(object):
                    value: object,
                    seen_elements: set) -> object:  # pylint: disable=g-bare-generic
     """Render the value section of an object."""
-    if isinstance(value, _PropertyDictWrapper):
+    if isinstance(value, PropertyDictWrapper):
       value = value.get_all()
     if isinstance(value, dict):
       value = self.render_dict(value, seen_elements)

@@ -193,8 +193,8 @@ class ComponentLauncher(BaseComponentLauncher):
           Executor will use beam DirectRunner as Default.
     """
     component_info = data_types.ComponentInfo(
-        component_type=component.component_type,
-        component_id=component.component_id)
+        component_type=component.node_type,
+        component_id=component.node_id)
     super(ComponentLauncher, self).__init__(
         component_info=component_info,
         driver_class=component.driver_class,

@@ -16,3 +16,4 @@
 from tfx.types.artifact import Artifact
 from tfx.types.channel import Channel
 from tfx.types.component_spec import ComponentSpec
+from tfx.types.node_common import PropertyDictWrapper

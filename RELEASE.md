@@ -4,10 +4,14 @@
 
 *   Made model validator executor forward compatible with TFMA change.
 *   Added Iris flowers classification example.
+*   Introduced TfxNode as the base class of any node in a TFX pipeline DAG.
 
 ## Bug fixes and other changes
 
 ### Deprecations
+
+*   Deprecated component_type in favor of node_type.
+*   Deprecated component_id in favor of node_id.
 
 ## Breaking changes
 

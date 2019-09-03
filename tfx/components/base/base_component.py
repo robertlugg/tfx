@@ -24,10 +24,10 @@ from six import with_metaclass
 
 from typing import Any, Dict, Optional, Text
 
+from tensorflow.python.util import deprecation  # pylint: disable=g-direct-tensorflow-import
 from tfx import types
 from tfx.components.base import base_driver
 from tfx.components.base import executor_spec
-from tfx.types import component_spec
 
 
 def _abstract_property() -> Any:
@@ -35,7 +35,80 @@ def _abstract_property() -> Any:
   return abc.abstractmethod(lambda: None)
 
 
-class BaseComponent(with_metaclass(abc.ABCMeta, object)):
+class TfxNode(with_metaclass(abc.ABCMeta, object)):
+  """Base class for a node in TFX pipeline DAG."""
+
+  def __init__(self, instance_name: Optional[Text] = None):
+    # TODO(b/139540680): consider making instance_name private.
+    self.instance_name = instance_name
+    self._upstream_nodes = set()
+    self._downstream_nodes = set()
+
+  @property
+  def node_type(self) -> Text:
+    return '.'.join([self.__class__.__module__, self.__class__.__name__])
+
+  @property
+  @deprecation.deprecated(None,
+                          'component_type is deprecated, use node_type instead')
+  def component_type(self) -> Text:
+    return self.node_type
+
+  # TODO(ruoyu): Consolidate the usage of component identifier. Moving forward,
+  # we will have two component level keys:
+  # - component_type: the path of the python executor or the image uri of the
+  #   executor.
+  # - component_id: <component_class_name>.<instance_name>
+  @property
+  def node_id(self) -> Text:
+    """Node id, unique across all TFX nodes in a pipeline.
+
+    If instance name is available, node_id will be:
+      <node_class_name>.<instance_name>
+    otherwise, node_id will be:
+      <node_class_name>
+
+    Returns:
+      node id.
+    """
+    node_class_name = self.__class__.__name__
+    if self.instance_name:
+      return '{}.{}'.format(node_class_name, self.instance_name)
+    else:
+      return node_class_name
+
+  @property
+  @deprecation.deprecated(None,
+                          'component_id is deprecated, use node_id instead')
+  def component_id(self) -> Text:
+    return self.node_id
+
+  @property
+  @abc.abstractmethod
+  def inputs(self) -> types.PropertyDictWrapper:
+    pass
+
+  @property
+  @abc.abstractmethod
+  def outputs(self) -> types.PropertyDictWrapper:
+    pass
+
+  @property
+  def upstream_nodes(self):
+    return self._upstream_nodes
+
+  def add_upstream_node(self, upstream_node):
+    self._upstream_nodes.add(upstream_node)
+
+  @property
+  def downstream_nodes(self):
+    return self._downstream_nodes
+
+  def add_downstream_node(self, downstream_node):
+    self._downstream_nodes.add(downstream_node)
+
+
+class BaseComponent(with_metaclass(abc.ABCMeta, TfxNode)):
   """Base class for a TFX pipeline component.
 
   An instance of a subclass of BaseComponent represents the parameters for a
@@ -47,8 +120,8 @@ class BaseComponent(with_metaclass(abc.ABCMeta, object)):
   Attributes:
     SPEC_CLASS: a subclass of types.ComponentSpec used by this component
       (required).
-    EXECUTOR_SPEC: an instance of executor_spec.ExecutorSpec which describes
-      how to execute this component (required).
+    EXECUTOR_SPEC: an instance of executor_spec.ExecutorSpec which describes how
+      to execute this component (required).
     DRIVER_CLASS: a subclass of base_driver.BaseDriver as a custom driver for
       this component (optional, defaults to base_driver.BaseDriver).
   """
@@ -81,6 +154,7 @@ class BaseComponent(with_metaclass(abc.ABCMeta, object)):
         component in the pipeline. Required if two instances of the same
         component is used in the pipeline.
     """
+    super(BaseComponent, self).__init__(instance_name)
     self.spec = spec
     if custom_executor_spec:
       if not isinstance(custom_executor_spec, executor_spec.ExecutorSpec):
@@ -89,10 +163,6 @@ class BaseComponent(with_metaclass(abc.ABCMeta, object)):
              'ExecutorSpec') % (custom_executor_spec, self.__class__))
     self.executor_spec = (custom_executor_spec or self.__class__.EXECUTOR_SPEC)
     self.driver_class = self.__class__.DRIVER_CLASS
-    # TODO(b/139540680): consider making instance_name private.
-    self.instance_name = instance_name
-    self._upstream_nodes = set()
-    self._downstream_nodes = set()
     self._validate_component_class()
     self._validate_spec(spec)
 
@@ -132,57 +202,16 @@ class BaseComponent(with_metaclass(abc.ABCMeta, object)):
     return ('%s(spec: %s, executor_spec: %s, driver_class: %s, '
             'component_id: %s, inputs: %s, outputs: %s)') % (
                 self.__class__.__name__, self.spec, self.executor_spec,
-                self.driver_class, self.component_id, self.inputs, self.outputs)
+                self.driver_class, self.node_id, self.inputs, self.outputs)
 
   @property
-  def component_type(self) -> Text:
-    return '.'.join([self.__class__.__module__, self.__class__.__name__])
-
-  @property
-  def inputs(self) -> component_spec._PropertyDictWrapper:
+  def inputs(self) -> types.PropertyDictWrapper:
     return self.spec.inputs
 
   @property
-  def outputs(self) -> component_spec._PropertyDictWrapper:
+  def outputs(self) -> types.PropertyDictWrapper:
     return self.spec.outputs
 
   @property
   def exec_properties(self) -> Dict[Text, Any]:
     return self.spec.exec_properties
-
-  # TODO(ruoyu): Consolidate the usage of component identifier. Moving forward,
-  # we will have two component level keys:
-  # - component_type: the path of the python executor or the image uri of the
-  #   executor.
-  # - component_id: <component_class_name>.<unique_name>
-  @property
-  def component_id(self):
-    """Component id, unique across all component instances in a pipeline.
-
-    If unique name is available, component_id will be:
-      <component_class_name>.<instance_name>
-    otherwise, component_id will be:
-      <component_class_name>
-
-    Returns:
-      component id.
-    """
-    component_class_name = self.__class__.__name__
-    if self.instance_name:
-      return '{}.{}'.format(component_class_name, self.instance_name)
-    else:
-      return component_class_name
-
-  @property
-  def upstream_nodes(self):
-    return self._upstream_nodes
-
-  def add_upstream_node(self, upstream_node):
-    self._upstream_nodes.add(upstream_node)
-
-  @property
-  def downstream_nodes(self):
-    return self._downstream_nodes
-
-  def add_downstream_node(self, downstream_node):
-    self._downstream_nodes.add(downstream_node)
