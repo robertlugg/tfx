@@ -54,7 +54,8 @@ class SchemaGen(base_component.BaseComponent):
   EXECUTOR_SPEC = executor_spec.ExecutorClassSpec(executor.Executor)
 
   def __init__(self,
-               stats: types.Channel = None,
+               stats: Optional[types.Channel] = None,
+               fixed_schema: Optional[types.Channel] = None,
                infer_feature_shape: Optional[bool] = False,
                output: Optional[types.Channel] = None,
                statistics: Optional[types.Channel] = None,
@@ -62,14 +63,18 @@ class SchemaGen(base_component.BaseComponent):
     """Constructs a SchemaGen component.
 
     Args:
-      stats: A Channel of `ExampleStatisticsPath` type (required if spec is not
+      stats: A Channel of `ExampleStatistics` type (required if spec is not
         passed). This should contain at least a `train` split. Other splits are
-        currently ignored. _required_
+        currently ignored. Either 'stats'/'statistics' or 'fixed_schema'
+        is required.
+      fixed_schema: A Channel of `Schema` type. If provided, pass through this
+        schema artifact as the output. Either 'stats'/'statistics' or
+        'fixed_schema' is required.
       infer_feature_shape: Boolean value indicating whether or not to infer the
         shape of features. If the feature shape is not inferred, downstream
         Tensorflow Transform component using the schema will parse input
         as tf.SparseTensor.
-      output: Output `SchemaPath` channel for schema result.
+      output: Output `Schema` channel for schema result.
       statistics: Future replacement of the 'stats' argument.
       instance_name: Optional name assigned to this specific instance of
         SchemaGen.  Required only if multiple SchemaGen components are declared
@@ -80,6 +85,14 @@ class SchemaGen(base_component.BaseComponent):
     stats = stats or statistics
     output = output or types.Channel(
         type=standard_artifacts.Schema, artifacts=[standard_artifacts.Schema()])
+
+    if stats is None and fixed_schema is None:
+      raise ValueError(
+          'At least either statistics or fixed_schema must be supplied.')
+
     spec = SchemaGenSpec(
-        stats=stats, infer_feature_shape=infer_feature_shape, output=output)
+        stats=stats,
+        fixed_schema=fixed_schema,
+        infer_feature_shape=infer_feature_shape,
+        output=output)
     super(SchemaGen, self).__init__(spec=spec, instance_name=instance_name)

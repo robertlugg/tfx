@@ -3,8 +3,11 @@
 ## Major Features and Improvements
 
 *   Made model validator executor forward compatible with TFMA change.
+*   Added option to use fixed Schema artifact for ExampleValidator, Transform
+    and Trainer.
 
 ## Bug fixes and other changes
+
 
 ### Deprecations
 
