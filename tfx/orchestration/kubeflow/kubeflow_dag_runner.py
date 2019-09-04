@@ -16,18 +16,24 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import contextlib
+import io
+import json
 import os
-
+import tarfile
 from kfp import compiler
 from kfp import dsl
 from kfp import gcp
-from typing import Callable, List, Optional, Text
+from kfp.compiler._k8s_helper import K8sHelper
+from kfp.dsl._metadata import PipelineMeta
 
 from tfx import version
 from tfx.orchestration import pipeline as tfx_pipeline
 from tfx.orchestration import tfx_runner
 from tfx.orchestration.kubeflow import base_component
 from tfx.orchestration.kubeflow.proto import kubeflow_pb2
+from typing import Callable, List, Optional, Text
+import yaml
 
 # OpFunc represents the type of a function that takes as input a
 # dsl.ContainerOp and returns the same object. Common operations such as adding
@@ -159,6 +165,7 @@ class KubeflowDagRunner(tfx_runner.TfxRunner):
     """
     self._output_dir = output_dir or os.getcwd()
     self._config = config or KubeflowDagRunnerConfig()
+    self._compiler = compiler.Compiler()
 
   def _construct_pipeline_graph(self, pipeline: tfx_pipeline.Pipeline):
     """Constructs a Kubeflow Pipeline graph.
@@ -190,6 +197,53 @@ class KubeflowDagRunner(tfx_runner.TfxRunner):
 
       component_to_kfp_op[component] = kfp_component.container_op
 
+  def _pipeline_injection(self, pipeline: dsl.Pipeline):
+    """Inject pipeline level info and sanitize op/param names."""
+    # TODO(b/139957573): Currently duplicate logic from kfp.compiler. This
+    # should be simplified after kfp has a better modularized compiling method.
+
+    # Sanitize operator names and param names
+    sanitized_ops = {}
+    # pipeline level artifact location
+    artifact_location = pipeline.conf.artifact_location
+
+    for op in pipeline.ops.values():
+      # inject pipeline level artifact location into if the op does not have
+      # an artifact location config already.
+      if hasattr(op, 'artifact_location'):
+        if artifact_location and not op.artifact_location:
+          op.artifact_location = artifact_location
+
+      sanitized_name = K8sHelper.sanitize_k8s_name(op.name)
+      op.name = sanitized_name
+      for param in op.outputs.values():
+        param.name = K8sHelper.sanitize_k8s_name(param.name)
+        if param.op_name:
+          param.op_name = K8sHelper.sanitize_k8s_name(param.op_name)
+      if op.output is not None:
+        op.output.name = K8sHelper.sanitize_k8s_name(op.output.name)
+        op.output.op_name = K8sHelper.sanitize_k8s_name(op.output.op_name)
+      if op.dependent_names:
+        op.dependent_names = \
+          [K8sHelper.sanitize_k8s_name(name) for name in op.dependent_names]
+      if isinstance(op, dsl.ContainerOp) and op.file_outputs is not None:
+        sanitized_file_outputs = {}
+        for key in op.file_outputs.keys():
+          sanitized_file_outputs[K8sHelper.sanitize_k8s_name(key)] \
+            = op.file_outputs[key]
+        op.file_outputs = sanitized_file_outputs
+      elif isinstance(op, dsl.ResourceOp) and op.attribute_outputs is not None:
+        sanitized_attribute_outputs = {}
+        for key in op.attribute_outputs.keys():
+          sanitized_attribute_outputs[K8sHelper.sanitize_k8s_name(key)] = \
+            op.attribute_outputs[key]
+        op.attribute_outputs = sanitized_attribute_outputs
+      sanitized_ops[sanitized_name] = op
+    pipeline.ops = sanitized_ops
+
+    return self._compiler._create_pipeline_workflow(  # pylint: disable=protected-access
+        [], pipeline, pipeline.conf.op_transformers)
+
   def run(self, pipeline: tfx_pipeline.Pipeline):
     """Compiles and outputs a Kubeflow Pipeline YAML definition file.
 
@@ -198,20 +252,32 @@ class KubeflowDagRunner(tfx_runner.TfxRunner):
         pipeline.
     """
 
-    @dsl.pipeline(
-        name=pipeline.pipeline_args['pipeline_name'],
-        description=pipeline.pipeline_args.get('description', ''))
-    def _construct_pipeline():
-      """Constructs a Kubeflow pipeline.
-
-      Creates Kubeflow ContainerOps for each TFX component encountered in the
-      logical pipeline definition.
-      """
+    # TODO(b/128836890): Add pipeline parameters after removing the usage of
+    # pipeline function.
+    sanitized_name = K8sHelper.sanitize_k8s_name(
+        pipeline.pipeline_args['pipeline_name'])
+    with dsl.Pipeline(sanitized_name) as dsl_pipeline:
+      # Constructs a Kubeflow pipeline.
+      # Creates Kubeflow ContainerOps for each TFX component encountered in the
+      # logical pipeline definition and append them to the pipeline object.
       self._construct_pipeline_graph(pipeline)
+
+    workflow = self._pipeline_injection(dsl_pipeline)
+    pipeline_meta = PipelineMeta(
+        name=sanitized_name, description='')
+
+    workflow.setdefault('metadata', {}).setdefault(
+        'annotations', {})['pipelines.kubeflow.org/pipeline_spec'] = json.dumps(
+            pipeline_meta.to_dict(), sort_keys=True)
+    yaml_text = yaml.dump(workflow, default_flow_style=False)
 
     pipeline_name = pipeline.pipeline_args['pipeline_name']
     # TODO(b/134680219): Allow users to specify the extension. Specifying
     # .yaml will compile the pipeline directly into a YAML file. Kubeflow
     # backend recognizes .tar.gz, .zip, and .yaml today.
     pipeline_file = os.path.join(self._output_dir, pipeline_name + '.tar.gz')
-    compiler.Compiler().compile(_construct_pipeline, pipeline_file)
+    with tarfile.open(pipeline_file, 'w:gz') as tar:
+      with contextlib.closing(io.BytesIO(yaml_text.encode())) as yaml_file:
+        tarinfo = tarfile.TarInfo('pipeline.yaml')
+        tarinfo.size = len(yaml_file.getvalue())
+        tar.addfile(tarinfo, fileobj=yaml_file)
